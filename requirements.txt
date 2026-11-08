@@ -1,0 +1,38 @@
+# eTrak server runtime dependencies.
+#
+# Install with:  pip install -r requirements.txt
+#
+# Every version is pinned because this has to run unattended on a client
+# machine. Two constraints worth knowing:
+#
+#   * numpy must stay < 2. onnxruntime 1.19 and this stack are built against
+#     the 1.x ABI; numpy 2 breaks the native extension at import time.
+#   * onnxruntime is the inference engine, NOT tensorflow and NOT tflite.
+#     tflite-runtime publishes no Windows wheel; the model is therefore shipped
+#     as .onnx, verified numerically identical to the original .tflite.
+
+# --- web / API ---
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+pydantic==2.5.3
+
+# --- database ---
+SQLAlchemy==1.4.53
+pymysql==1.1.0
+
+# --- auth ---
+bcrypt==4.1.2
+python-jose[cryptography]==3.3.0
+cryptography==41.0.7
+
+# --- config / discovery ---
+python-dotenv==1.0.0
+zeroconf==0.55.0
+ifaddr==0.2.0
+pytz==2024.1
+
+# --- AI inference (waste classifier) ---
+onnxruntime==1.19.2
+pillow>=10.0,<12
+numpy>=1.24,<2

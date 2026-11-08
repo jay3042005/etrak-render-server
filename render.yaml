@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: etrak-api
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /ping
+    autoDeployTrigger: off
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      # TiDB requires verified TLS. Set DATABASE_URL with ssl_ca pointing to
+      # /etc/ssl/certs/ca-certificates.crt and ssl_check_hostname=true.
+      # Use the application database etrakyan, never the system schema sys.
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ETRAK_DATA_DIR
+        value: /tmp/etrak
+      - key: DB_POOL_SIZE
+        value: "2"
+      - key: DB_MAX_OVERFLOW
+        value: "2"
+      - key: ENABLE_API_DOCS
+        value: "false"
