@@ -2695,7 +2695,10 @@ async def get_live_fleet(response: Response, current_user: dict = Depends(get_cu
                 WHERE (tl.last_updated >= :cutoff OR tl.is_on_duty = TRUE)
                     AND NOT (tl.latitude = 0 AND tl.longitude = 0)
                     AND tl.status = 'active'
-                ORDER BY tl.last_updated DESC
+                -- With DISTINCT, MySQL tolerates ordering by a column that is
+                -- not selected; TiDB rejects it (ERROR 3065). Sort by the
+                -- selected epoch alias instead so both engines agree.
+                ORDER BY last_updated DESC
                 LIMIT :limit
             """),
             {"today": today, "limit": max_rows, "cutoff": cutoff},
