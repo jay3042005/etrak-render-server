@@ -2792,11 +2792,21 @@ async def get_trucks(barangay: str = None, limit: int = 200, offset: int = 0):
                    tl.is_on_duty,
                    {truck_last_updated_column(db.get_bind().dialect.name)}
             FROM users u
-            LEFT JOIN truck_locations tl ON tl.id = (
-                SELECT latest.id FROM truck_locations latest
-                WHERE latest.truck_id = u.id
-                ORDER BY latest.last_updated DESC, latest.id DESC LIMIT 1
-            )
+            -- Latest row per truck. A correlated subquery inside ON is
+            -- rejected by TiDB ("ON condition doesn't support subqueries yet")
+            -- and forces one lookup per driver; ranking once is portable to
+            -- MySQL 8, MariaDB 10.2+, SQLite 3.25+ and TiDB.
+            LEFT JOIN (
+                SELECT * FROM (
+                    SELECT latest.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY latest.truck_id
+                               ORDER BY latest.last_updated DESC, latest.id DESC
+                           ) AS _latest_rank
+                    FROM truck_locations latest
+                ) ranked
+                WHERE ranked._latest_rank = 1
+            ) tl ON tl.truck_id = u.id
             WHERE u.role = 'driver'
               AND (u.is_active IS NULL OR u.is_active = TRUE)
               AND u.assigned_truck_plate IS NOT NULL
