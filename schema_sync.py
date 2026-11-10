@@ -185,6 +185,34 @@ def _text(sql: str):
     return text(sql)
 
 
+def create_index_if_missing(session, table: str, index: str, columns: str, *, unique=False) -> bool:
+    """Create an index unless it already exists, on any supported dialect.
+
+    SQLite understands `CREATE INDEX IF NOT EXISTS`; MySQL, MariaDB and TiDB
+    reject it with a syntax error (1064). A raw error there used to abort the
+    whole caller, so one index silently prevented every later table from being
+    created on a fresh database. Ask the catalogue instead.
+    """
+    if _is_sqlite(session):
+        kind = "UNIQUE INDEX" if unique else "INDEX"
+        session.execute(
+            _text(f"CREATE {kind} IF NOT EXISTS {index} ON {table}({columns})")
+        )
+        return True
+    exists = session.execute(
+        _text(
+            "SELECT 1 FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND INDEX_NAME = :i"
+        ),
+        {"t": table, "i": index},
+    ).first()
+    if exists:
+        return False
+    kind = "UNIQUE INDEX" if unique else "INDEX"
+    session.execute(_text(f"CREATE {kind} {index} ON {table}({columns})"))
+    return True
+
+
 def _column_ddl(column: Column) -> str:
     """Rebuild the DDL for a missing column.
 

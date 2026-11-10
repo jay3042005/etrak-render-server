@@ -71,6 +71,9 @@ from pathlib import Path
 import pymysql
 pymysql.install_as_MySQLdb()  # harmless for SQLite; required for mysql+pymysql:// URLs
 
+# Additive schema reconciliation and the portable index helper both live here.
+import schema_sync
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1562,8 +1565,6 @@ def run_schema_sync():
 
     from pathlib import Path as _Path
 
-    import schema_sync
-
     db = SessionLocal()
     try:
         report = schema_sync.reconcile(db, _Path(sql_path))
@@ -1767,11 +1768,8 @@ def _relax_notification_user_id(db) -> None:
         )
         db.execute(text("DROP TABLE notifications"))
         db.execute(text("ALTER TABLE notifications_rebuild RENAME TO notifications"))
-        db.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS idx_notifications_user_id "
-                "ON notifications (user_id)"
-            )
+        schema_sync.create_index_if_missing(
+            db, "notifications", "idx_notifications_user_id", "user_id",
         )
         db.commit()
         logging.info("Rebuilt notifications table so user_id accepts NULL")
@@ -1882,9 +1880,9 @@ def setup_database():
             )
         """)
         )
-        db.execute(text("CREATE INDEX IF NOT EXISTS idx_sched_barangay ON schedules(barangay)"))
-        db.execute(text("CREATE INDEX IF NOT EXISTS idx_sched_day ON schedules(day_of_week)"))
-        db.execute(text("CREATE INDEX IF NOT EXISTS idx_sched_driver ON schedules(driver_id)"))
+        schema_sync.create_index_if_missing(db, "schedules", "idx_sched_barangay", "barangay")
+        schema_sync.create_index_if_missing(db, "schedules", "idx_sched_day", "day_of_week")
+        schema_sync.create_index_if_missing(db, "schedules", "idx_sched_driver", "driver_id")
 
         # Collection Records Table
         db.execute(
@@ -2022,14 +2020,13 @@ def setup_database():
             )
         """)
         )
-        db.execute(text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_notif_reads_unique "
-            "ON notification_reads(notification_id, user_id)"
-        ))
-        db.execute(text(
-            "CREATE INDEX IF NOT EXISTS idx_notif_target_scope "
-            "ON notifications(target_scope)"
-        ))
+        schema_sync.create_index_if_missing(
+            db, "notification_reads", "idx_notif_reads_unique",
+            "notification_id, user_id", unique=True,
+        )
+        schema_sync.create_index_if_missing(
+            db, "notifications", "idx_notif_target_scope", "target_scope",
+        )
 
         # Users Table
         db.execute(
@@ -2264,7 +2261,7 @@ def setup_database():
             pass
 
         try:
-            db.execute(text("CREATE INDEX IF NOT EXISTS idx_date ON collection_records(date)"))
+            schema_sync.create_index_if_missing(db, "collection_records", "idx_date", "date")
         except:
             pass
 
@@ -2306,7 +2303,11 @@ def setup_database():
         db.commit()
         print("[OK] Database tables verified/created successfully!")
     except Exception as e:
-        print(f"[!] Database setup warning: {e}")
+        # One failing statement must not cancel the tables declared after it.
+        # This used to abort the whole function on a fresh MySQL database (the
+        # non-portable CREATE INDEX above raised 1064), leaving users, reports
+        # and everything declared later permanently missing.
+        print(f"[!] Database setup warning: {str(e).splitlines()[0][:200]}")
         db.rollback()
     finally:
         db.close()
