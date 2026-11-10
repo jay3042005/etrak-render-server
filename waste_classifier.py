@@ -29,7 +29,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,9 @@ import numpy as np
 LOGGER = logging.getLogger(__name__)
 
 IMAGE_SIZE = 224
+
+# How long the ONNX session may sit unused before its memory is released.
+IDLE_UNLOAD_SECONDS = int(os.getenv("WASTE_MODEL_IDLE_SECONDS", "60"))
 
 # Confidence policy. Mirrors WasteDetectionService in the Flutter app, retuned
 # for 6 classes:
@@ -87,14 +92,63 @@ class WasteClassifier:
         self._labels: list[str] = []
         self._lock = threading.Lock()
         self._load_error: str | None = None
+        self._last_used: float = 0.0
+        self._reaper: threading.Timer | None = None
+
+    # --------------------------------------------------------- idle unload #
+    def touch(self) -> None:
+        """Record a use and arm the idle-unload timer."""
+        self._last_used = time.monotonic()
+        if self._reaper is None or not self._reaper.is_alive():
+            self._reaper = threading.Timer(IDLE_UNLOAD_SECONDS, self._unload_if_idle)
+            self._reaper.daemon = True
+            self._reaper.start()
+
+    def _unload_if_idle(self) -> None:
+        """Release the ONNX session after IDLE_UNLOAD_SECONDS of no scans.
+
+        The model is ~9 MB of weights but ONNX Runtime holds several times that
+        in arenas and thread pools, so an idle free-tier container keeps paying
+        for memory nobody is using. Dropping the session returns it to the OS;
+        the next scan reloads in a few hundred milliseconds.
+        """
+        with self._lock:
+            if self._session is None:
+                self._reaper = None
+                return
+            idle_for = time.monotonic() - self._last_used
+            if idle_for < IDLE_UNLOAD_SECONDS:
+                # A scan landed while the timer was firing; wait out the rest.
+                self._reaper = threading.Timer(
+                    IDLE_UNLOAD_SECONDS - idle_for, self._unload_if_idle
+                )
+                self._reaper.daemon = True
+                self._reaper.start()
+                return
+            self._session = None
+            self._input_name = None
+            self._output_name = None
+            self._reaper = None
+        LOGGER.info(
+            "Waste classifier unloaded after %ds idle (memory released)",
+            IDLE_UNLOAD_SECONDS,
+        )
 
     # ------------------------------------------------------------- loading #
     @property
     def available(self) -> bool:
-        """True when the model files exist and loaded successfully."""
-        if self._session is None and self._load_error is None:
-            self.load()
-        return self._session is not None
+        """True when the model files exist and are readable.
+
+        Deliberately does NOT load the session: this backs a health endpoint the
+        app polls, and loading here would defeat the idle unload by keeping the
+        model resident forever. A load error recorded by a previous attempt
+        still reports False, so a broken model stays diagnosable.
+        """
+        if self._session is not None:
+            return True
+        if self._load_error is not None:
+            return False
+        return self.model_path.exists() and self.labels_path.exists()
 
     @property
     def load_error(self) -> str | None:
@@ -187,6 +241,7 @@ class WasteClassifier:
             raise RuntimeError(self._load_error or "model unavailable")
         tensor = self._prepare(image_bytes)
         outputs = self._session.run([self._output_name], {self._input_name: tensor})
+        self.touch()
         return np.asarray(outputs[0][0], dtype=np.float64)
 
     # ------------------------------------------------------------- policy #
